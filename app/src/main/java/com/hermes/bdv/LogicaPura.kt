@@ -85,6 +85,19 @@ object LogicaPura {
     }
 
     /**
+     * Decide si toca volver a avisar al usuario durante la espera de la
+     * autorización (huella/verificación del banco).
+     * @param ultimoAvisoMs SystemClock.uptimeMillis() del último aviso (0 = ninguno).
+     * @param ahoraMs valor actual de SystemClock.uptimeMillis().
+     * @param intervaloMs milisegundos mínimos entre avisos.
+     * @return true si no hubo aviso previo o ya pasó el intervalo.
+     */
+    fun debeReavisar(ultimoAvisoMs: Long, ahoraMs: Long, intervaloMs: Long): Boolean {
+        if (ultimoAvisoMs <= 0L) return true
+        return ahoraMs - ultimoAvisoMs >= intervaloMs
+    }
+
+    /**
      * Genera los slots de ejecución para un rango: un slot por día hábil
      * entre [inicioMillis] y [finMillis] (ambos inclusive), a la hora indicada.
      */

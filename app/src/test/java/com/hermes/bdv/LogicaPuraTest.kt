@@ -104,6 +104,30 @@ class LogicaPuraTest {
         assertEquals(1L, LogicaPura.esperaRestanteCompra(100_000L, 109_999L))
     }
 
+    // ---- debeReavisar (cadencia de avisos durante la autorización) ----
+
+    @Test
+    fun debeReavisar_sinAvisoPrevio_true() {
+        assertTrue(LogicaPura.debeReavisar(0L, 50_000L, 20_000L))
+    }
+
+    @Test
+    fun debeReavisar_antesDelIntervalo_false() {
+        // Último aviso hace 10s, intervalo 20s -> todavía no
+        assertFalse(LogicaPura.debeReavisar(100_000L, 110_000L, 20_000L))
+    }
+
+    @Test
+    fun debeReavisar_cumplidoElIntervalo_true() {
+        // Último aviso hace exactamente 20s -> sí
+        assertTrue(LogicaPura.debeReavisar(100_000L, 120_000L, 20_000L))
+    }
+
+    @Test
+    fun debeReavisar_pasadoElIntervalo_true() {
+        assertTrue(LogicaPura.debeReavisar(100_000L, 140_000L, 20_000L))
+    }
+
     // ---- proximoDiaHabil ----
 
     @Test

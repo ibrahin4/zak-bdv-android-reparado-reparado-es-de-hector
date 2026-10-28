@@ -60,6 +60,7 @@ class HermesAccessibilityService : AccessibilityService() {
         const val TIPO_ERROR = "error"
         const val TIPO_EXITO = "exito"
         const val TIPO_HUELLA = "huella"
+        const val TIPO_DIAG = "diag"   // volcado de pantalla para diagnóstico
 
         private const val PAQUETE_BDV = "com.bancodevenezuela.bdvdigital"
         // Las cuentas NO van quemadas: se leen de Config (lo que el usuario
@@ -73,6 +74,12 @@ class HermesAccessibilityService : AccessibilityService() {
         private const val MS_ESPERA_FORM_TRAS_TAP = 3_000L
         private const val MARGEN_SYNC_LOGIN_SEG = 3.0
         private const val MAX_INTENTOS_COMPROBANTE = 20
+
+        // Autorización manual: tras pulsar Confirmar aparece la verificación del
+        // banco (huella u otra) que SOLO el usuario puede completar. El bot NO
+        // pulsa nada mientras espera; solo avisa y verifica el estado real.
+        private const val ESPERA_AUTORIZACION_MS = 120_000L // hasta 2 min para autorizar
+        private const val INTERVALO_REAVISO_MS = 20_000L    // re-avisar cada 20s
 
         private const val CANAL_ID = "hermes_flujo"
         private const val NOTIF_ID = 1001
@@ -397,11 +404,58 @@ class HermesAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** Detecta la ventana de autenticación biométrica del sistema/BDV. */
+    /**
+     * Vuelca a Telegram los elementos de la pantalla de verificación, SOLO para
+     * diagnóstico: saber si el BDV ofrece un método escrito (PIN/clave) o si es
+     * la biometría del sistema (no automatizable). NO se vuelca el contenido de
+     * campos de contraseña; solo se indica que existen.
+     */
+    private fun volcarAutenticacionDiag() {
+        try {
+            val sb = StringBuilder("🔎 Diagnóstico de la pantalla de verificación:\n")
+            conRaiz { raiz ->
+                val pila = ArrayDeque<AccessibilityNodeInfo>()
+                val vistos = mutableListOf<AccessibilityNodeInfo>()
+                pila.add(raiz); vistos.add(raiz)
+                var n = 0
+                while (pila.isNotEmpty() && n < 40) {
+                    val nodo = pila.removeLast()
+                    val editable = esEditText(nodo) || nodo.isEditable
+                    val etiqueta = when {
+                        nodo.isPassword -> "[campo de contraseña]"
+                        editable -> "[campo de texto editable]"
+                        else -> descDe(nodo).ifEmpty { textoDe(nodo) }
+                    }
+                    if (etiqueta.isNotEmpty() && etiqueta.length <= 60) {
+                        val marca = when {
+                            nodo.isClickable -> "•botón"
+                            editable -> "•campo"
+                            else -> "·texto"
+                        }
+                        sb.append(marca).append(": ").append(etiqueta).append('\n')
+                        n++
+                    }
+                    for (i in 0 until nodo.childCount) {
+                        nodo.getChild(i)?.let { pila.add(it); vistos.add(it) }
+                    }
+                }
+                for (v in vistos) if (v !== raiz) reciclarSeguro(v)
+            }
+            notificar(TIPO_DIAG, sb.toString().take(3500))
+        } catch (e: Exception) {
+            Log.w(TAG, "no se pudo volcar diagnóstico de autenticación", e)
+        }
+    }
+
+    /** Detecta la ventana de autenticación/verificación (del sistema o del BDV). */
     private fun esAutenticacionBiometrica(): Boolean =
         hayTextoContiene("Autentícate") || hayDescContiene("Autentícate") ||
         hayTextoContiene("Autenticate") || hayDescContiene("Autenticate") ||
-        hayTextoContiene("método de autenticación") || hayDescContiene("método de autenticación")
+        hayTextoContiene("método de autenticación") || hayDescContiene("método de autenticación") ||
+        hayTextoContiene("huella") || hayDescContiene("huella") ||
+        hayTextoContiene("biométr") || hayDescContiene("biométr") ||
+        hayTextoContiene("Verifica tu identidad") || hayDescContiene("Verifica tu identidad") ||
+        hayTextoContiene("Verificación") || hayDescContiene("Verificación")
 
     // ------------------------------------------------------------------
     // Utilidades de espera (hilo de trabajo)
@@ -1426,22 +1480,48 @@ class HermesAccessibilityService : AccessibilityService() {
             Log.w(TAG, "no se pudo pulsar Confirmar")
             return false
         }
-        var reavisado = false
-        repeat(MAX_INTENTOS_COMPROBANTE) {
-            if (detenido) return false
-            if (esComprobante() || hayTextoContiene("exitosa") || hayDescContiene("exitosa") ||
+
+        // Tras Confirmar aparece la verificación del banco (huella u otra). El
+        // bot NO pulsa NADA: espera a que el usuario autorice. Solo da la compra
+        // por buena si aparece el "Comprobante"/"exitosa" (estado real), nunca
+        // porque la pantalla de verificación desaparezca. Así no se duplica ni
+        // se marca como exitosa una operación de resultado desconocido.
+        fun compraConfirmada(): Boolean =
+            esComprobante() || hayTextoContiene("exitosa") || hayDescContiene("exitosa") ||
                 hayTextoContiene("operación exitosa")
-            ) {
+
+        var diagEnviado = false
+        var ultimoReaviso = 0L
+        val finEspera = SystemClock.uptimeMillis() + ESPERA_AUTORIZACION_MS
+        while (SystemClock.uptimeMillis() < finEspera && !detenido &&
+            !Thread.currentThread().isInterrupted
+        ) {
+            if (compraConfirmada()) {
+                Log.i(TAG, "comprobante detectado: compra confirmada")
                 return true
             }
-            // Si sigue en la ventana de huella, recordar una vez más
-            if (!reavisado && esAutenticacionBiometrica()) {
-                avisarHuella()
-                reavisado = true
+            if (esAutenticacionBiometrica()) {
+                // Primera vez: volcar la pantalla para diagnóstico (una sola vez).
+                if (!diagEnviado) {
+                    volcarAutenticacionDiag()
+                    diagEnviado = true
+                }
+                // Re-avisar al usuario con la cadencia definida.
+                val ahora = SystemClock.uptimeMillis()
+                if (LogicaPura.debeReavisar(ultimoReaviso, ahora, INTERVALO_REAVISO_MS)) {
+                    avisarHuella()
+                    ultimoReaviso = ahora
+                }
             }
-            esperar(300)
+            esperar(500)
         }
-        Log.w(TAG, "no se detectó comprobante")
+        if (detenido) return false
+        Log.w(TAG, "no se detectó comprobante tras la espera de autorización")
+        notificar(
+            TIPO_ERROR,
+            "⚠ No se confirmó la compra (verificación pendiente o cancelada). " +
+                "Revisa la app; NO se reintenta para no duplicar la operación."
+        )
         return false
     }
 
