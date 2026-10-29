@@ -247,6 +247,49 @@ class MainActivity : AppCompatActivity() {
             })
         })
 
+        // Clave/PIN de operaciones (opcional, cifrada) — solo si el BDV confirma
+        // la compra con una clave ESCRITA en vez de huella.
+        cont.addView(card().apply {
+            addView(cardTitle("Clave de operaciones (opcional)"))
+            addView(hintText(
+                "Solo si el BDV te deja confirmar la compra con una clave/PIN " +
+                    "ESCRITA en su app (no con huella). Si usas huella, déjala vacía. " +
+                    "Se guarda cifrada; el bot la escribe solo al confirmar."
+            ))
+            val txtEstadoPin = TextView(this@MainActivity).apply {
+                textSize = 14f
+                text = if (ClaveSegura.pinConfigurado(this@MainActivity))
+                    "Estado: configurada" else "Estado: sin configurar"
+            }
+            addView(txtEstadoPin)
+            val etPin = styledField("").apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                hint = "Clave/PIN de operaciones del BDV"
+            }
+            addView(etPin)
+            addView(primaryButton("Guardar clave de operaciones") {
+                val v = etPin.text.toString()
+                if (v.isBlank()) {
+                    toast("Escribe la clave de operaciones primero")
+                } else if (ClaveSegura.guardarPin(this@MainActivity, v)) {
+                    etPin.setText("")
+                    txtEstadoPin.text = "Estado: configurada"
+                    toast("Clave de operaciones guardada (cifrada)")
+                    agregarRegistro("Clave de operaciones configurada")
+                } else {
+                    toast("No se pudo guardar la clave de operaciones")
+                }
+            })
+            addView(dangerButton("Borrar clave de operaciones") {
+                confirmar("¿Borrar la clave de operaciones guardada?") {
+                    ClaveSegura.borrarPin(this@MainActivity)
+                    txtEstadoPin.text = "Estado: sin configurar"
+                    toast("Clave de operaciones borrada")
+                    agregarRegistro("Clave de operaciones borrada")
+                }
+            })
+        })
+
         // Programar
         cont.addView(card().apply {
             addView(cardTitle("Programar ejecuciones"))

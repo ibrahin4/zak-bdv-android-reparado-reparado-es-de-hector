@@ -1455,6 +1455,41 @@ class HermesAccessibilityService : AccessibilityService() {
     // Paso [6/6]: confirmar operación (automático) + comprobante
     // ------------------------------------------------------------------
 
+    /**
+     * Si la pantalla de verificación trae un CAMPO ESCRIBIBLE (método de clave
+     * propio del banco), escribe el PIN/clave de operaciones guardado y pulsa el
+     * botón de autorizar. Esto NO burla nada: es el método oficial del banco,
+     * llenado como lo haría el usuario.
+     *
+     * Retorna false si no hay campo escribible (caso de la biometría del sistema,
+     * que NO es automatizable) o si no hay PIN configurado.
+     */
+    private fun intentarConfirmarConClave(): Boolean {
+        val pin = ClaveSegura.leerPin(this)
+        if (pin.isEmpty()) return false
+        // Sin campo escribible => es la biometría del sistema (no automatizable).
+        if (!hayEditText()) {
+            Log.i(TAG, "verificación sin campo escribible: es biometría del sistema")
+            return false
+        }
+        // Escribir la clave de operaciones (ACTION_SET_TEXT; nunca se loguea).
+        if (!escribirEnCampo(texto = pin, timeoutMs = 2_000)) {
+            Log.w(TAG, "no se pudo escribir la clave de operaciones")
+            return false
+        }
+        esperar(300)
+        // Pulsar el botón para autorizar con la clave escrita (varios rótulos).
+        val ok = pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 2_000) ||
+            pulsar(desc = "Confirmar", texto = "Confirmar", timeoutMs = 2_000) ||
+            pulsar(descContiene = "Autorizar", textoContiene = "Autorizar", timeoutMs = 2_000) ||
+            pulsar(desc = "Continuar", texto = "Continuar", timeoutMs = 2_000)
+        if (ok) {
+            notificar(TIPO_PANTALLA, "Clave de operaciones enviada automáticamente.")
+            Log.i(TAG, "clave de operaciones enviada")
+        }
+        return ok
+    }
+
     private fun confirmarYComprobante(): Boolean {
         if (!esperarHasta(10_000) { esConfirmar() }) {
             Log.w(TAG, "no se detectó 'Confirmar Operación'")
@@ -1491,6 +1526,7 @@ class HermesAccessibilityService : AccessibilityService() {
                 hayTextoContiene("operación exitosa")
 
         var diagEnviado = false
+        var claveIntentada = false
         var ultimoReaviso = 0L
         val finEspera = SystemClock.uptimeMillis() + ESPERA_AUTORIZACION_MS
         while (SystemClock.uptimeMillis() < finEspera && !detenido &&
@@ -1506,7 +1542,17 @@ class HermesAccessibilityService : AccessibilityService() {
                     volcarAutenticacionDiag()
                     diagEnviado = true
                 }
-                // Re-avisar al usuario con la cadencia definida.
+                // Si hay clave de operaciones configurada, intentar confirmarla
+                // automáticamente (solo si el banco ofrece un campo escribible).
+                // Un solo intento: si falla o es biometría, pasa a modo manual.
+                if (!claveIntentada && ClaveSegura.pinConfigurado(this)) {
+                    claveIntentada = true
+                    if (intentarConfirmarConClave()) {
+                        esperar(500)
+                        continue
+                    }
+                }
+                // Biometría del sistema o sin clave: avisar y esperar al usuario.
                 val ahora = SystemClock.uptimeMillis()
                 if (LogicaPura.debeReavisar(ultimoReaviso, ahora, INTERVALO_REAVISO_MS)) {
                     avisarHuella()

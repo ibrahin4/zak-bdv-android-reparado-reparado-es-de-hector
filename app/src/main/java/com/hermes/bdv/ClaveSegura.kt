@@ -18,6 +18,7 @@ object ClaveSegura {
     private const val TAG = "HermesClave"
     private const val PREFS = "hermes_clave_cifrada"
     private const val K_CLAVE = "clave"
+    private const val K_PIN = "pin_operaciones"   // clave/PIN para confirmar operaciones
 
     @Volatile
     private var cache: SharedPreferences? = null
@@ -72,6 +73,47 @@ object ClaveSegura {
             prefs(context)?.edit()?.remove(K_CLAVE)?.apply()
         } catch (e: Exception) {
             Log.e(TAG, "no se pudo borrar la clave", e)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Clave/PIN de operaciones (opcional): solo se usa si el BDV confirma la
+    // compra con una clave ESCRITA en su propia app. Se guarda cifrada, nunca
+    // se envía a Telegram ni aparece en logs. Si el banco usa huella, se deja
+    // vacío y no se usa.
+    // ------------------------------------------------------------------
+
+    /** Guarda el PIN/clave de operaciones (cifrado). Retorna true si se guardó. */
+    fun guardarPin(context: Context, pin: String): Boolean {
+        val p = pin.trim()
+        if (p.isEmpty()) return false
+        return try {
+            prefs(context)?.edit()?.putString(K_PIN, p)?.commit() == true
+        } catch (e: Exception) {
+            Log.e(TAG, "no se pudo guardar el PIN de operaciones", e)
+            false
+        }
+    }
+
+    /** Lee el PIN/clave de operaciones (solo el servicio lo usa al confirmar). */
+    fun leerPin(context: Context): String {
+        return try {
+            prefs(context)?.getString(K_PIN, "").orEmpty()
+        } catch (e: Exception) {
+            Log.e(TAG, "no se pudo leer el PIN de operaciones", e)
+            ""
+        }
+    }
+
+    /** true si hay un PIN/clave de operaciones configurado. */
+    fun pinConfigurado(context: Context): Boolean = leerPin(context).isNotEmpty()
+
+    /** Borra el PIN/clave de operaciones del almacén cifrado. */
+    fun borrarPin(context: Context) {
+        try {
+            prefs(context)?.edit()?.remove(K_PIN)?.apply()
+        } catch (e: Exception) {
+            Log.e(TAG, "no se pudo borrar el PIN de operaciones", e)
         }
     }
 }
