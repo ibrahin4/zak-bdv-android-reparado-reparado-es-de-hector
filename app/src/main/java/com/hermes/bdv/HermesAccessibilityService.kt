@@ -1477,7 +1477,7 @@ class HermesAccessibilityService : AccessibilityService() {
             Log.w(TAG, "no se pudo escribir la clave de operaciones")
             return false
         }
-        esperar(300)
+        esperar(150)
         // Pulsar el botón para autorizar con la clave escrita (varios rótulos).
         val ok = pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 2_000) ||
             pulsar(desc = "Confirmar", texto = "Confirmar", timeoutMs = 2_000) ||
@@ -1497,9 +1497,6 @@ class HermesAccessibilityService : AccessibilityService() {
         }
         Log.i(TAG, "pantalla Confirmar Operación detectada")
         notificar(TIPO_PANTALLA, "Paso 6/6: Confirmar Operación.")
-
-        // Aviso anticipado: al confirmar aparece la huella del banco.
-        avisarHuella()
 
         // Pulsar Confirmar AUTOMÁTICAMENTE (Jhon: ningún paso es manual).
         // yaAvanzo=esComprobante: si al cerrar el diálogo la operación ya se
@@ -1527,7 +1524,6 @@ class HermesAccessibilityService : AccessibilityService() {
 
         var diagEnviado = false
         var claveIntentada = false
-        var ultimoReaviso = 0L
         val finEspera = SystemClock.uptimeMillis() + ESPERA_AUTORIZACION_MS
         while (SystemClock.uptimeMillis() < finEspera && !detenido &&
             !Thread.currentThread().isInterrupted
@@ -1542,24 +1538,19 @@ class HermesAccessibilityService : AccessibilityService() {
                     volcarAutenticacionDiag()
                     diagEnviado = true
                 }
-                // Si hay clave de operaciones configurada, intentar confirmarla
-                // automáticamente (solo si el banco ofrece un campo escribible).
-                // Un solo intento: si falla o es biometría, pasa a modo manual.
+                // Confirmar con la clave de operaciones si está configurada y el
+                // banco ofrece un campo escribible. Un solo intento, al instante.
+                // Si es la huella del sistema, NO se avisa (petición del usuario):
+                // se espera en silencio y, si no se confirma, se reporta al final.
                 if (!claveIntentada && ClaveSegura.pinConfigurado(this)) {
                     claveIntentada = true
                     if (intentarConfirmarConClave()) {
-                        esperar(500)
+                        esperar(250)
                         continue
                     }
                 }
-                // Biometría del sistema o sin clave: avisar y esperar al usuario.
-                val ahora = SystemClock.uptimeMillis()
-                if (LogicaPura.debeReavisar(ultimoReaviso, ahora, INTERVALO_REAVISO_MS)) {
-                    avisarHuella()
-                    ultimoReaviso = ahora
-                }
             }
-            esperar(500)
+            esperar(250)
         }
         if (detenido) return false
         Log.w(TAG, "no se detectó comprobante tras la espera de autorización")
