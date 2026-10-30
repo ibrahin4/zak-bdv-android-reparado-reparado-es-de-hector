@@ -410,9 +410,9 @@ class HermesAccessibilityService : AccessibilityService() {
      * la biometría del sistema (no automatizable). NO se vuelca el contenido de
      * campos de contraseña; solo se indica que existen.
      */
-    private fun volcarAutenticacionDiag() {
+    private fun volcarPantallaDiag(encabezado: String) {
         try {
-            val sb = StringBuilder("🔎 Diagnóstico de la pantalla de verificación:\n")
+            val sb = StringBuilder(encabezado + "\n")
             conRaiz { raiz ->
                 val pila = ArrayDeque<AccessibilityNodeInfo>()
                 val vistos = mutableListOf<AccessibilityNodeInfo>()
@@ -1042,8 +1042,28 @@ class HermesAccessibilityService : AccessibilityService() {
         texto: String? = null
     ): Boolean {
         var intento = 0
+        var ultimoAvisoEspera = 0L
+        var diagVolcado = false
+        val inicioInsistir = SystemClock.uptimeMillis()
         while (!detenido && !Thread.currentThread().isInterrupted) {
             intento++
+            // Aviso "sigo vivo" por Telegram cada ~15s. Los clics de accesibilidad
+            // NO se ven en pantalla, así que sin esto el bot parece congelado y el
+            // usuario se sale (y pierde el cupo). Esto le avisa que sigue peleando.
+            val ahoraAviso = SystemClock.uptimeMillis()
+            if (LogicaPura.debeReavisar(ultimoAvisoEspera, ahoraAviso, 15_000L)) {
+                notificar(
+                    TIPO_PANTALLA,
+                    "⏳ Insistiendo en \"$nombre\" (intento $intento). Sigo ACTIVO, esperando que el banco deje pasar (cupo)… no cierres la app."
+                )
+                ultimoAvisoEspera = ahoraAviso
+            }
+            // Diagnóstico UNA sola vez si lleva +30s sin avanzar: vuelca la
+            // pantalla para ver POR QUÉ no pasa (mensaje del banco, saldo, cupo…).
+            if (!diagVolcado && ahoraAviso - inicioInsistir > 30_000L) {
+                volcarPantallaDiag("🔎 Pantalla donde se quedó \"$nombre\" (no avanza):")
+                diagVolcado = true
+            }
             // 1. Verificar pantalla correcta
             if (verificarPantalla != null && !verificarPantalla()) {
                 if (yaAvanzo?.invoke() == true) {
@@ -1314,7 +1334,14 @@ class HermesAccessibilityService : AccessibilityService() {
     private fun cicloCompra(): Boolean {
         var intentosCompra = 0
         var ultimoTapCompra = 0L
+        val inicio = SystemClock.uptimeMillis()
         while (!detenido) {
+            // Tope de tiempo sin abrir el formulario → pedir re-login (evita
+            // colgarse si "Compra" no aparece, p. ej. cupo cerrado).
+            if (SystemClock.uptimeMillis() - inicio > 60_000L) {
+                Log.i(TAG, "cicloCompra 60s sin abrir → solicitar re-login")
+                return false
+            }
             // ¿Ya abrió el formulario? (el tap anterior pudo funcionar)
             if (esFormCompra()) {
                 Log.i(TAG, "formulario abierto")
@@ -1336,6 +1363,12 @@ class HermesAccessibilityService : AccessibilityService() {
                             return true
                         }
                         esperar(200)
+                    }
+                    // Tras MAX_TAPS_COMPRA (3) taps sin abrir el formulario, pedir
+                    // re-login para refrescar y cazar el cupo (lo hace ejecutarFlujo).
+                    if (intentosCompra >= LogicaPura.MAX_TAPS_COMPRA) {
+                        Log.i(TAG, "$intentosCompra taps a Compra sin abrir → solicitar re-login")
+                        return false
                     }
                 }
                 else -> {
@@ -1535,7 +1568,7 @@ class HermesAccessibilityService : AccessibilityService() {
             if (esAutenticacionBiometrica()) {
                 // Primera vez: volcar la pantalla para diagnóstico (una sola vez).
                 if (!diagEnviado) {
-                    volcarAutenticacionDiag()
+                    volcarPantallaDiag("🔎 Diagnóstico de la pantalla de verificación:")
                     diagEnviado = true
                 }
                 // Confirmar con la clave de operaciones si está configurada y el
@@ -1568,6 +1601,7 @@ class HermesAccessibilityService : AccessibilityService() {
 
     private fun ejecutarFlujo() {
         var ciclo = 0
+        var exito = false
         try {
             // Aviso de inicio (petición del usuario 29/09/2026)
             notificar(TIPO_PANTALLA, "▶ Hermes iniciado ($montoActual USD). Paso 1/6: Login.")
@@ -1591,10 +1625,21 @@ class HermesAccessibilityService : AccessibilityService() {
                 }
                 notificar(TIPO_PANTALLA, "Paso 3/6: Compra de divisas.")
 
-                // [3/6] Compra (reintento sin límite hasta abrir)
+                // [3/6] Compra. Si tras 3 taps (o 60s) no abre el formulario, se
+                // cierra la app, se re-loguea y se reinicia el ciclo (como la
+                // versión que usa su amigo). Sin límite hasta lograrlo o detener.
                 if (!cicloCompra()) {
-                    Log.i(TAG, "ciclo $ciclo: detenido por el usuario durante Compra")
-                    break
+                    if (detenido) {
+                        Log.i(TAG, "ciclo $ciclo: detenido por el usuario durante Compra")
+                        break
+                    }
+                    notificar(
+                        TIPO_PANTALLA,
+                        "🔄 Compra no abrió; cerrando y re-logueando para reintentar (ciclo $ciclo)…"
+                    )
+                    cerrarApp()
+                    esperar(1_500)
+                    continue
                 }
                 notificar(TIPO_PANTALLA, "Paso 4/6: Cuentas y monto.")
 
@@ -1613,6 +1658,7 @@ class HermesAccessibilityService : AccessibilityService() {
 
                 // [6/6] Confirmar + comprobante
                 if (confirmarYComprobante()) {
+                    exito = true
                     notificarExitoConCaptura("🎉 ¡Felicidades, lograste comprar divisas!")
                     break
                 } else {
@@ -1627,6 +1673,14 @@ class HermesAccessibilityService : AccessibilityService() {
             Log.e(TAG, "error inesperado en el flujo", e)
             notificar(TIPO_ERROR, "⚠ Error inesperado: ${e.message}")
         } finally {
+            // Aviso claro de que Hermes dejó de intentar (petición del usuario):
+            // si no fue éxito ni lo detuvo el usuario, se informa que se paró.
+            if (!exito && !detenido) {
+                notificar(
+                    TIPO_ERROR,
+                    "⏹ Hermes se detuvo y YA NO está intentando comprar. Si querías seguir, vuelve a ejecutarlo."
+                )
+            }
             // Limpiar la clave de memoria al terminar
             claveActual = ""
             montoActual = ""
