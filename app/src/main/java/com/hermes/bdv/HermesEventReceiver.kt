@@ -53,57 +53,14 @@ class HermesEventReceiver(
 
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACCION_EVENTO) return
-        val tipo = intent.getStringExtra(EXTRA_TIPO) ?: return
+        intent.getStringExtra(EXTRA_TIPO) ?: return
         val mensaje = intent.getStringExtra(EXTRA_MENSAJE).orEmpty()
-
-        val token = Config.getTokenTelegram(context)
-        val chatId = Config.getChatTelegram(context)
-        val telegramListo = token.isNotBlank() && chatId != 0L
-        if (!telegramListo) {
-            onLog?.invoke("(Telegram sin configurar) $mensaje")
-            return
-        }
-
-        when (tipo) {
-            TIPO_PANTALLA -> {
-                if (mensaje.isNotBlank()) {
-                    if (Config.isAvisosActivos(context)) {
-                        TelegramNotifier.enviarTexto(token, chatId, mensaje)
-                    }
-                    onLog?.invoke(mensaje)
-                }
-            }
-            TIPO_ERROR -> {
-                if (mensaje.isNotBlank()) {
-                    TelegramNotifier.enviarTexto(token, chatId, "⚠ $mensaje")
-                    onLog?.invoke("⚠ $mensaje")
-                }
-            }
-            TIPO_HUELLA -> {
-                if (mensaje.isNotBlank()) {
-                    TelegramNotifier.enviarTexto(token, chatId, mensaje)
-                    onLog?.invoke(mensaje)
-                }
-            }
-            TIPO_DIAG -> {
-                // Volcado de diagnóstico de la pantalla de verificación.
-                if (mensaje.isNotBlank()) {
-                    TelegramNotifier.enviarTexto(token, chatId, mensaje)
-                    onLog?.invoke(mensaje)
-                }
-            }
-            TIPO_EXITO -> {
-                val png = leerCaptura(intent)
-                if (png != null) {
-                    TelegramNotifier.enviarFoto(token, chatId, png, CAPTION_EXITO)
-                } else {
-                    TelegramNotifier.enviarTexto(token, chatId, CAPTION_EXITO)
-                }
-                onLog?.invoke(CAPTION_EXITO)
-                // La ejecución terminó. (La clave vive cifrada en ClaveSegura;
-                // no hay nada que limpiar de memoria.)
-            }
-        }
+        // El envío a Telegram ahora lo hace el servicio directamente (porque la
+        // pantalla pasa a segundo plano al abrir el BDV y dejaba de enviar).
+        // Aquí solo se refleja en el registro en pantalla cuando la app Hermes
+        // está visible; cuando está en segundo plano, simplemente no hay registro
+        // visible, pero Telegram sigue llegando desde el servicio.
+        if (mensaje.isNotBlank()) onLog?.invoke(mensaje)
     }
 
     private fun leerCaptura(intent: Intent): ByteArray? {

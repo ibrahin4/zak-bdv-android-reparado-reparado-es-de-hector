@@ -156,6 +156,11 @@ class HermesAccessibilityService : AccessibilityService() {
     @Volatile private var claveActual: String = ""
     @Volatile private var horaObjetivoActual: String = "08:00:00"
 
+    // Latido "sigo vivo": guarda la última acción y un hilo que la reporta.
+    @Volatile private var ultimoEvento: String = ""
+    @Volatile private var latidoActivo: Boolean = false
+    @Volatile private var hiloLatido: Thread? = null
+
     // ------------------------------------------------------------------
     // Ciclo de vida del servicio
     // ------------------------------------------------------------------
@@ -351,6 +356,21 @@ class HermesAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.w(TAG, "captura de éxito falló", e)
         }
+        // Enviar el éxito a Telegram DIRECTO (no depende de MainActivity).
+        try {
+            val token = Config.getTokenTelegram(this)
+            val chatId = Config.getChatTelegram(this)
+            if (token.isNotBlank() && chatId != 0L) {
+                val bytes = pngBytes
+                if (bytes != null && bytes.isNotEmpty()) {
+                    TelegramNotifier.enviarFoto(token, chatId, bytes, mensaje)
+                } else {
+                    TelegramNotifier.enviarTexto(token, chatId, mensaje)
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "no se pudo enviar éxito a Telegram", e)
+        }
         try {
             sendBroadcast(Intent(ACTION_EVENTO).apply {
                 setPackage(packageName)
@@ -375,7 +395,14 @@ class HermesAccessibilityService : AccessibilityService() {
 
     private fun notificar(tipo: String, mensaje: String) {
         Log.i(TAG, "[$tipo] $mensaje")
+        if (mensaje.isNotBlank()) ultimoEvento = mensaje  // para el latido "sigo vivo"
+        // Telegram DIRECTO desde el servicio (que siempre está vivo). Antes se
+        // enviaba vía broadcast a MainActivity, pero esa pantalla pasa a segundo
+        // plano al abrir el BDV y dejaba de mandar los avisos.
+        enviarTelegramDirecto(tipo, mensaje)
         try {
+            // El broadcast queda solo para el registro en pantalla (cuando la
+            // app Hermes está visible); ya NO se usa para Telegram.
             sendBroadcast(Intent(ACTION_EVENTO).apply {
                 setPackage(packageName)
                 putExtra(EXTRA_TIPO, tipo)
@@ -384,6 +411,17 @@ class HermesAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             Log.w(TAG, "no se pudo enviar broadcast", e)
         }
+    }
+
+    /** Envía el aviso a Telegram directamente (no depende de MainActivity). */
+    private fun enviarTelegramDirecto(tipo: String, mensaje: String) {
+        if (mensaje.isBlank()) return
+        val token = Config.getTokenTelegram(this)
+        val chatId = Config.getChatTelegram(this)
+        if (token.isBlank() || chatId == 0L) return
+        // Los avisos de "pantalla" respetan el switch de avisos; el resto siempre.
+        if (tipo == TIPO_PANTALLA && !Config.isAvisosActivos(this)) return
+        TelegramNotifier.enviarTexto(token, chatId, mensaje)
     }
 
     /**
@@ -1605,6 +1643,23 @@ class HermesAccessibilityService : AccessibilityService() {
         try {
             // Aviso de inicio (petición del usuario 29/09/2026)
             notificar(TIPO_PANTALLA, "▶ Hermes iniciado ($montoActual USD). Paso 1/6: Login.")
+            // Latido "sigo vivo" cada 30s con la fase actual (para saber si el
+            // bot está vivo o se murió, aunque la pantalla del BDV se vea quieta).
+            latidoActivo = true
+            hiloLatido = Thread {
+                while (latidoActivo && !detenido) {
+                    try {
+                        Thread.sleep(30_000)
+                    } catch (e: InterruptedException) {
+                        break
+                    }
+                    if (!latidoActivo || detenido) break
+                    enviarTelegramDirecto(
+                        TIPO_PANTALLA,
+                        "💓 Hermes sigue VIVO. Fase actual: ${ultimoEvento.ifEmpty { "arrancando" }}"
+                    )
+                }
+            }.also { it.isDaemon = true; it.start() }
             while (!detenido && !Thread.currentThread().isInterrupted) {
                 ciclo++
                 Log.i(TAG, "=== ciclo $ciclo ===")
@@ -1673,6 +1728,10 @@ class HermesAccessibilityService : AccessibilityService() {
             Log.e(TAG, "error inesperado en el flujo", e)
             notificar(TIPO_ERROR, "⚠ Error inesperado: ${e.message}")
         } finally {
+            // Detener el latido "sigo vivo".
+            latidoActivo = false
+            hiloLatido?.interrupt()
+            hiloLatido = null
             // Aviso claro de que Hermes dejó de intentar (petición del usuario):
             // si no fue éxito ni lo detuvo el usuario, se informa que se paró.
             if (!exito && !detenido) {
