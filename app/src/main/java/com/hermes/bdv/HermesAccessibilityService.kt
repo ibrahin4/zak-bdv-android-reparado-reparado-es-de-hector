@@ -983,15 +983,16 @@ class HermesAccessibilityService : AccessibilityService() {
      * relanzado como respaldo). Hecho para ser rápido.
      */
     private fun cerrarSesion(): Boolean {
-        // 1. Abrir el menú ☰ (arriba-derecha) por GESTO, al toque (sin leer).
-        tocarEsquinaSuperiorDerecha()
+        // 1. Abrir el menú: tocar el BOTÓN clicable de arriba-derecha (las rayitas),
+        //    localizándolo de verdad en la pantalla (instantáneo), no a ciegas.
+        abrirMenuSuperiorDerecho()
         // 2. Tocar "Salir" APENAS aparezca (revisa cada 100ms, sin esperas largas).
-        var salir = tocarApenasAparezca(1_800, "Salir")
+        var salir = tocarApenasAparezca(1_500, "Salir", "Cerrar sesión")
         if (!salir) {
-            // El gesto no abrió el menú → abrir por nombre y reintentar "Salir".
+            // Respaldo: por nombre del menú o por gesto, y reintentar "Salir".
             pulsarUnaVez(descContiene = "Más opciones", textoContiene = "Más opciones")
             pulsarUnaVez(descContiene = "Opciones", textoContiene = "Opciones")
-            pulsarUnaVez(descContiene = "Menú", textoContiene = "Menú")
+            tocarEsquinaSuperiorDerecha()
             salir = tocarApenasAparezca(1_500, "Salir", "Cerrar sesión")
         }
         if (!salir) {
@@ -1027,6 +1028,57 @@ class HermesAccessibilityService : AccessibilityService() {
             esperar(100)
         }
         return false
+    }
+
+    /**
+     * Abre el menú tocando el botón CLICABLE más a la derecha de la franja
+     * superior de la pantalla (las tres rayitas). Lo localiza de verdad en el
+     * árbol (rápido), en vez de adivinar coordenadas. Devuelve true si tocó algo.
+     */
+    private fun abrirMenuSuperiorDerecho(): Boolean {
+        val raiz = try {
+            rootInActiveWindow
+        } catch (e: Exception) {
+            null
+        } ?: return false
+        val vistos = mutableListOf<AccessibilityNodeInfo>()
+        var elegido: AccessibilityNodeInfo? = null
+        var mejorX = -1
+        try {
+            val dm = resources.displayMetrics
+            val limiteY = dm.heightPixels * 0.18   // franja superior (~barra)
+            val minX = dm.widthPixels * 0.6        // mitad derecha
+            val rect = android.graphics.Rect()
+            val pila = ArrayDeque<AccessibilityNodeInfo>()
+            pila.add(raiz); vistos.add(raiz)
+            while (pila.isNotEmpty()) {
+                val n = pila.removeLast()
+                if (n.isClickable) {
+                    n.getBoundsInScreen(rect)
+                    if (rect.top < limiteY && rect.centerX() > minX && rect.centerX() > mejorX) {
+                        mejorX = rect.centerX()
+                        elegido = n
+                    }
+                }
+                for (i in 0 until n.childCount) {
+                    n.getChild(i)?.let { pila.add(it); vistos.add(it) }
+                }
+            }
+            val ok = elegido?.let {
+                try {
+                    it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                } catch (e: Exception) {
+                    false
+                }
+            } ?: false
+            Log.i(TAG, "abrirMenuSuperiorDerecho ok=$ok x=$mejorX")
+            return ok
+        } catch (e: Exception) {
+            Log.w(TAG, "error abriendo menú superior derecho", e)
+            return false
+        } finally {
+            for (v in vistos) reciclarSeguro(v)
+        }
     }
 
     /** Toca la esquina superior derecha (menú ☰) por gesto, cuando el ícono no
