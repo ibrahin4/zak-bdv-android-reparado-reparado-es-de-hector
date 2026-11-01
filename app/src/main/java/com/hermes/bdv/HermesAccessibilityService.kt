@@ -983,31 +983,34 @@ class HermesAccessibilityService : AccessibilityService() {
      * relanzado como respaldo). Hecho para ser rápido.
      */
     private fun cerrarSesion(): Boolean {
-        // 1. Abrir el menú (arriba-derecha). El ícono puede no tener texto
-        //    accesible; se prueban nombres comunes y, si no, un toque por gesto.
-        val menuAbierto =
-            pulsar(descContiene = "Más opciones", textoContiene = "Más opciones", timeoutMs = 1_200) ||
-            pulsar(descContiene = "Opciones", textoContiene = "Opciones", timeoutMs = 1_000) ||
-            pulsar(descContiene = "Menú", textoContiene = "Menú", timeoutMs = 800) ||
-            tocarEsquinaSuperiorDerecha()
-        Log.i(TAG, "cerrarSesion: menú intento=$menuAbierto")
-        esperar(400)
-        // 2. Última opción del menú: "Salir".
-        val salir = pulsar(desc = "Salir", texto = "Salir", timeoutMs = 1_500) ||
-            pulsar(descContiene = "Salir", textoContiene = "Salir", timeoutMs = 1_000) ||
-            pulsar(descContiene = "Cerrar sesión", textoContiene = "Cerrar sesión", timeoutMs = 1_000)
+        // 1. Abrir el menú ☰ (arriba-derecha): PRIMERO por gesto (rápido, el ícono
+        //    no suele tener texto). Solo si no abrió, probar por nombre (corto).
+        tocarEsquinaSuperiorDerecha()
+        esperar(250)
+        if (!hayTexto("Salir") && !hayDescContiene("Salir")) {
+            val porNombre = pulsar(descContiene = "Más opciones", textoContiene = "Más opciones", timeoutMs = 400) ||
+                pulsar(descContiene = "Opciones", textoContiene = "Opciones", timeoutMs = 400) ||
+                pulsar(descContiene = "Menú", textoContiene = "Menú", timeoutMs = 400)
+            Log.i(TAG, "cerrarSesion: menú por nombre=$porNombre")
+            esperar(250)
+        }
+        // 2. Tocar "Salir".
+        val salir = pulsar(desc = "Salir", texto = "Salir", timeoutMs = 1_000) ||
+            pulsar(descContiene = "Salir", textoContiene = "Salir", timeoutMs = 600) ||
+            pulsar(descContiene = "Cerrar sesión", textoContiene = "Cerrar sesión", timeoutMs = 600)
         if (!salir) {
             Log.w(TAG, "no se encontró 'Salir' en el menú")
             return false
         }
         // 3. Diálogo "Confirmar salir" → Sí.
-        esperar(300)
-        pulsar(desc = "Sí", texto = "Sí", timeoutMs = 1_500) ||
-            pulsar(desc = "Si", texto = "Si", timeoutMs = 600) ||
-            pulsar(descContiene = "Confirmar", textoContiene = "Confirmar", timeoutMs = 600) ||
-            pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 600)
-        // 4. Verificar que llegamos al login.
-        val enLogin = esperarHasta(6_000) {
+        esperar(200)
+        val si = pulsar(desc = "Sí", texto = "Sí", timeoutMs = 1_000) ||
+            pulsar(desc = "Si", texto = "Si", timeoutMs = 500) ||
+            pulsar(descContiene = "Confirmar", textoContiene = "Confirmar", timeoutMs = 500) ||
+            pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 500)
+        Log.i(TAG, "cerrarSesion: confirmar=$si")
+        // 4. Verificar que llegamos al login (rápido).
+        val enLogin = esperarHasta(4_000) {
             hayDesc("Iniciar sesión") || hayTexto("Iniciar sesión") ||
                 hayDescContiene("Ingresa con tu") || hayTextoContiene("Ingresa con tu") ||
                 hayEditText()
@@ -1311,17 +1314,19 @@ class HermesAccessibilityService : AccessibilityService() {
             }
             esperar(500)
         }
-        val ok = completarLogin()
+        val ok = completarLogin(viaLogout)
         sesionAbierta = ok
         return ok
     }
 
     /** Desde la pantalla de login (venga del splash o de 'Cerrar sesión'),
-     * escribe la clave y entra. */
-    private fun completarLogin(): Boolean {
+     * escribe la clave y entra. [rapido]=true en el re-login (esperas cortas,
+     * porque la pantalla de login ya está; no hay splash que esperar). */
+    private fun completarLogin(rapido: Boolean): Boolean {
         // Puede venir del splash ("Iniciar sesión"), de sesión ya válida
         // ("Inicio"), o directo en la pantalla de contraseña (tras cerrar sesión).
-        if (esperarHasta(3_000) { hayDesc("Iniciar sesión") || hayTexto("Iniciar sesión") }) {
+        val esperaSplash = if (rapido) 800L else 3_000L
+        if (esperarHasta(esperaSplash) { hayDesc("Iniciar sesión") || hayTexto("Iniciar sesión") }) {
             pulsar(desc = "Iniciar sesión", texto = "Iniciar sesión", timeoutMs = 5_000)
         } else if (hayDesc("Inicio") || hayTexto("Inicio")) {
             Log.i(TAG, "sesión ya válida")
