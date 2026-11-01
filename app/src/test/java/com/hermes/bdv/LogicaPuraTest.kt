@@ -235,7 +235,7 @@ class LogicaPuraTest {
     @Test
     fun constantes_respetanReglasDeJhon() {
         assertEquals(10_000L, LogicaPura.ESPERA_COMPRA_MS) // 10s exactos entre taps
-        assertEquals(3, LogicaPura.MAX_TAPS_COMPRA)        // máx 3 intentos
+        assertEquals(4, LogicaPura.MAX_TAPS_COMPRA)        // máx 4 intentos antes de re-login
         assertEquals(1.0, LogicaPura.MONTO_MIN, 0.0)
         assertEquals(500.0, LogicaPura.MONTO_MAX, 0.0)
     }

@@ -21,7 +21,7 @@ object LogicaPura {
     const val ESPERA_COMPRA_MS = 10_000L
 
     /** Máximo de pulsaciones de Compra por ciclo antes de re-login. */
-    const val MAX_TAPS_COMPRA = 3
+    const val MAX_TAPS_COMPRA = 4
 
     /**
      * Formato BDV para el monto: SIEMPRE dos decimales con coma.

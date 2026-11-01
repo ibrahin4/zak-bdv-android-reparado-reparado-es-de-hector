@@ -161,6 +161,10 @@ class HermesAccessibilityService : AccessibilityService() {
     @Volatile private var latidoActivo: Boolean = false
     @Volatile private var hiloLatido: Thread? = null
 
+    // true cuando ya hay sesión abierta → el re-login cierra sesión por el menú
+    // (rápido, sin salir de la app) en vez de relanzar.
+    @Volatile private var sesionAbierta: Boolean = false
+
     // ------------------------------------------------------------------
     // Ciclo de vida del servicio
     // ------------------------------------------------------------------
@@ -972,6 +976,68 @@ class HermesAccessibilityService : AccessibilityService() {
     }
 
     /** Cierre sin root: BACK repetido + HOME; el ciclo re-abre y re-loguea. */
+    /**
+     * Cierra la sesión por el menú de arriba a la derecha (las tres rayitas ☰),
+     * SIN salir de la app ni ir al home. Flujo: ☰ → "Salir" → confirmar "Sí" →
+     * pantalla de login. Devuelve true si cae en el login (si no, se usa el
+     * relanzado como respaldo). Hecho para ser rápido.
+     */
+    private fun cerrarSesion(): Boolean {
+        // 1. Abrir el menú (arriba-derecha). El ícono puede no tener texto
+        //    accesible; se prueban nombres comunes y, si no, un toque por gesto.
+        val menuAbierto =
+            pulsar(descContiene = "Más opciones", textoContiene = "Más opciones", timeoutMs = 1_200) ||
+            pulsar(descContiene = "Opciones", textoContiene = "Opciones", timeoutMs = 1_000) ||
+            pulsar(descContiene = "Menú", textoContiene = "Menú", timeoutMs = 800) ||
+            tocarEsquinaSuperiorDerecha()
+        Log.i(TAG, "cerrarSesion: menú intento=$menuAbierto")
+        esperar(400)
+        // 2. Última opción del menú: "Salir".
+        val salir = pulsar(desc = "Salir", texto = "Salir", timeoutMs = 1_500) ||
+            pulsar(descContiene = "Salir", textoContiene = "Salir", timeoutMs = 1_000) ||
+            pulsar(descContiene = "Cerrar sesión", textoContiene = "Cerrar sesión", timeoutMs = 1_000)
+        if (!salir) {
+            Log.w(TAG, "no se encontró 'Salir' en el menú")
+            return false
+        }
+        // 3. Diálogo "Confirmar salir" → Sí.
+        esperar(300)
+        pulsar(desc = "Sí", texto = "Sí", timeoutMs = 1_500) ||
+            pulsar(desc = "Si", texto = "Si", timeoutMs = 600) ||
+            pulsar(descContiene = "Confirmar", textoContiene = "Confirmar", timeoutMs = 600) ||
+            pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 600)
+        // 4. Verificar que llegamos al login.
+        val enLogin = esperarHasta(6_000) {
+            hayDesc("Iniciar sesión") || hayTexto("Iniciar sesión") ||
+                hayDescContiene("Ingresa con tu") || hayTextoContiene("Ingresa con tu") ||
+                hayEditText()
+        }
+        if (enLogin) Log.i(TAG, "sesión cerrada → en login") else Log.w(TAG, "tras 'Salir' no apareció login")
+        return enLogin
+    }
+
+    /** Toca la esquina superior derecha (menú ☰) por gesto, cuando el ícono no
+     * tiene texto accesible. */
+    private fun tocarEsquinaSuperiorDerecha(): Boolean {
+        return try {
+            val dm = resources.displayMetrics
+            val x = dm.widthPixels - 40 * dm.density
+            val y = 70 * dm.density
+            val path = android.graphics.Path().apply { moveTo(x, y) }
+            val gesto = android.accessibilityservice.GestureDescription.Builder()
+                .addStroke(
+                    android.accessibilityservice.GestureDescription.StrokeDescription(path, 0L, 60L)
+                )
+                .build()
+            dispatchGesture(gesto, null, null)
+            esperar(400)
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "no se pudo tocar la esquina superior derecha", e)
+            false
+        }
+    }
+
     private fun cerrarApp() {
         repeat(6) {
             if (detenido) return
@@ -1160,7 +1226,7 @@ class HermesAccessibilityService : AccessibilityService() {
                             }
                             break
                         }
-                        esperar(500)
+                        esperar(250)
                     }
                 }
             }
@@ -1195,7 +1261,7 @@ class HermesAccessibilityService : AccessibilityService() {
                 if (habilitado) return nodo // el llamador recicla
                 reciclarSeguro(nodo)
             }
-            esperar(200) // polling apretado: apenas se active, se detecta
+            esperar(120) // polling apretado: apenas se active, se detecta
         }
         return null
     }
@@ -1233,23 +1299,33 @@ class HermesAccessibilityService : AccessibilityService() {
     // ------------------------------------------------------------------
 
     private fun login(): Boolean {
-        if (!abrirApp()) {
-            Log.w(TAG, "no se pudo abrir la app BDV")
-            return false
-        }
-        esperar(500)
-
-        // Splash: si no hay "Iniciar sesión", quizá la sesión ya es válida
-        if (!esperarHasta(3_000) { hayDesc("Iniciar sesión") }) {
-            if (esperarHasta(5_000) { hayDesc("Inicio") || hayTexto("Inicio") }) {
-                Log.i(TAG, "sesión ya válida")
-                return true
+        // Re-login: si ya hay sesión abierta, cerrar sesión por el menú (rápido,
+        // SIN salir de la app ni ir al home). Si no se puede, relanzar la app.
+        val viaLogout = sesionAbierta && cerrarSesion()
+        if (viaLogout) {
+            Log.i(TAG, "re-login por 'Cerrar sesión' (sin relanzar)")
+        } else {
+            if (!abrirApp()) {
+                Log.w(TAG, "no se pudo abrir la app BDV")
+                return false
             }
-            Log.w(TAG, "splash no reconocido")
-            return false
+            esperar(500)
         }
-        if (!pulsar(desc = "Iniciar sesión", timeoutMs = 5_000)) {
-            Log.i(TAG, "app ya estaba más adelante del splash")
+        val ok = completarLogin()
+        sesionAbierta = ok
+        return ok
+    }
+
+    /** Desde la pantalla de login (venga del splash o de 'Cerrar sesión'),
+     * escribe la clave y entra. */
+    private fun completarLogin(): Boolean {
+        // Puede venir del splash ("Iniciar sesión"), de sesión ya válida
+        // ("Inicio"), o directo en la pantalla de contraseña (tras cerrar sesión).
+        if (esperarHasta(3_000) { hayDesc("Iniciar sesión") || hayTexto("Iniciar sesión") }) {
+            pulsar(desc = "Iniciar sesión", texto = "Iniciar sesión", timeoutMs = 5_000)
+        } else if (hayDesc("Inicio") || hayTexto("Inicio")) {
+            Log.i(TAG, "sesión ya válida")
+            return true
         }
 
         // Esperar link "Ingresa con tu contraseña" (cancelar huella si aparece)
@@ -1257,6 +1333,11 @@ class HermesAccessibilityService : AccessibilityService() {
         val finLink = SystemClock.uptimeMillis() + 45_000
         while (SystemClock.uptimeMillis() < finLink && !detenido) {
             if (hayDescContiene("Ingresa con tu") || hayTextoContiene("Ingresa con tu")) {
+                linkOk = true
+                break
+            }
+            // Tras cerrar sesión puede caer directo en el campo de clave.
+            if (hayEditText()) {
                 linkOk = true
                 break
             }
@@ -1640,6 +1721,7 @@ class HermesAccessibilityService : AccessibilityService() {
     private fun ejecutarFlujo() {
         var ciclo = 0
         var exito = false
+        sesionAbierta = false  // primera entrada de esta corrida: abrir la app
         try {
             // Aviso de inicio (petición del usuario 29/09/2026)
             notificar(TIPO_PANTALLA, "▶ Hermes iniciado ($montoActual USD). Paso 1/6: Login.")
@@ -1690,10 +1772,12 @@ class HermesAccessibilityService : AccessibilityService() {
                     }
                     notificar(
                         TIPO_PANTALLA,
-                        "🔄 Compra no abrió; cerrando y re-logueando para reintentar (ciclo $ciclo)…"
+                        "🔄 Compra no abrió; re-logueando al instante (ciclo $ciclo)…"
                     )
-                    cerrarApp()
-                    esperar(1_500)
+                    // NO ir al home ni cerrar del todo (eso tardaba ~10s). Solo
+                    // relanzar la app: abrirApp() usa FLAG_ACTIVITY_CLEAR_TASK, que
+                    // reinicia el BDV directo a la pantalla de login al instante.
+                    esperar(200)
                     continue
                 }
                 notificar(TIPO_PANTALLA, "Paso 4/6: Cuentas y monto.")
