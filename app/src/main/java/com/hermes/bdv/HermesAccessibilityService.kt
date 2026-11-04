@@ -1131,8 +1131,11 @@ class HermesAccessibilityService : AccessibilityService() {
 
     /** Cierra el diálogo "Ha ocurrido un error inesperado" con Aceptar. */
     private fun cerrarDialogoError(): Boolean {
-        if (!hayTextoContiene("Ha ocurrido un error inesperado")) return false
-        val ok = pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 2_000)
+        // Cubre "Ha ocurrido un error inesperado" y "Ocurrió un error inesperado
+        // por parte de la app" (texto o descripción).
+        if (!hayTextoContiene("error inesperado") && !hayDescContiene("error inesperado")) return false
+        val ok = pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 2_000) ||
+            pulsar(desc = "Entendido", texto = "Entendido", timeoutMs = 1_000)
         if (ok) Log.i(TAG, "diálogo 'error inesperado' cerrado")
         return ok
     }
@@ -1751,6 +1754,14 @@ class HermesAccessibilityService : AccessibilityService() {
                 Log.i(TAG, "comprobante detectado: compra confirmada")
                 return true
             }
+            // Error del banco o sin cupo tras la huella → fallar RÁPIDO para que
+            // ejecutarFlujo cierre el diálogo, re-loguee y repita todo el proceso.
+            if (hayTextoContiene("error inesperado") || hayDescContiene("error inesperado") ||
+                esNoDisponible()
+            ) {
+                Log.w(TAG, "error/no-disponible tras confirmar → reintentar con re-login")
+                return false
+            }
             if (esAutenticacionBiometrica()) {
                 // Primera vez: volcar la pantalla para diagnóstico (una sola vez).
                 if (!diagEnviado) {
@@ -1773,11 +1784,6 @@ class HermesAccessibilityService : AccessibilityService() {
         }
         if (detenido) return false
         Log.w(TAG, "no se detectó comprobante tras la espera de autorización")
-        notificar(
-            TIPO_ERROR,
-            "⚠ No se confirmó la compra (verificación pendiente o cancelada). " +
-                "Revisa la app; NO se reintenta para no duplicar la operación."
-        )
         return false
     }
 
@@ -1851,15 +1857,21 @@ class HermesAccessibilityService : AccessibilityService() {
 
                 // [4/6] Formulario
                 if (!formularioCuentasMonto()) {
-                    notificar(TIPO_ERROR, "⚠ FALLO: Continuar no avanzó en pantalla 1.")
-                    break
+                    if (detenido) break
+                    notificar(TIPO_PANTALLA, "🔄 No avanzó el formulario; cerrando error, re-logueando y reintentando (ciclo $ciclo)…")
+                    cerrarDialogoError()
+                    esperar(300)
+                    continue
                 }
 
                 // [5/6] Destino y actividad
                 notificar(TIPO_PANTALLA, "Paso 5/6: Destino de los fondos.")
                 if (!pasoDestinoActividad()) {
-                    notificar(TIPO_ERROR, "⚠ FALLO: Continuar no avanzó en pantalla 2.")
-                    break
+                    if (detenido) break
+                    notificar(TIPO_PANTALLA, "🔄 No avanzó Destino/Actividad; cerrando error, re-logueando y reintentando (ciclo $ciclo)…")
+                    cerrarDialogoError()
+                    esperar(300)
+                    continue
                 }
 
                 // [6/6] Confirmar + comprobante
@@ -1867,10 +1879,19 @@ class HermesAccessibilityService : AccessibilityService() {
                     exito = true
                     notificarExitoConCaptura("🎉 ¡Felicidades, lograste comprar divisas!")
                     break
-                } else {
-                    notificar(TIPO_ERROR, "⚠ No se detectó comprobante; revisa la app.")
-                    break
                 }
+                if (detenido) break
+                // ¿Fue por "error inesperado" del banco o sin cupo? → seguro que
+                // NO se compró: cerrar el error, re-loguear y REPETIR el proceso.
+                if (cerrarDialogoError() || esNoDisponible()) {
+                    notificar(TIPO_PANTALLA, "🔄 Error del banco / sin cupo tras confirmar; re-logueando y reintentando (ciclo $ciclo)…")
+                    esperar(300)
+                    continue
+                }
+                // Resultado DESCONOCIDO sin error visible: NO reintento, para no
+                // arriesgar una compra duplicada. Paro y aviso.
+                notificar(TIPO_ERROR, "⚠ No se detectó comprobante y no hubo error visible. Revisa la app; no reintento para no duplicar.")
+                break
             }
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
