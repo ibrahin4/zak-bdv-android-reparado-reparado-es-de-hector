@@ -746,10 +746,17 @@ class HermesAccessibilityService : AccessibilityService() {
     }
 
     /** Estado de un botón: true=habilitado, false=deshabilitado, null=no existe. */
-    private fun estadoBoton(desc: String? = null, texto: String? = null): Boolean? {
+    private fun estadoBoton(
+        desc: String? = null,
+        texto: String? = null,
+        descContiene: String? = null,
+        textoContiene: String? = null
+    ): Boolean? {
         val pred: (AccessibilityNodeInfo) -> Boolean = {
             (desc != null && coincideDesc(it, desc)) ||
-                (texto != null && coincideTexto(it, texto))
+                (texto != null && coincideTexto(it, texto)) ||
+                (descContiene != null && coincideDescContiene(it, descContiene)) ||
+                (textoContiene != null && coincideTextoContiene(it, textoContiene))
         }
         val nodo = buscarNodo(pred) ?: return null
         return try {
@@ -945,14 +952,16 @@ class HermesAccessibilityService : AccessibilityService() {
         { hayTextoContiene("Destino de los fondos") }
     )
 
-    private fun esConfirmar(): Boolean = enPantalla(
-        { hayDesc("Confirmar Operación") },
-        { hayTexto("Confirmar Operación") },
-        { hayDescContiene("Confirmar Operaci") }
-    )
+    private fun esConfirmar(): Boolean =
+        hayDescContiene("Confirmar Operaci") || hayTextoContiene("Confirmar Operaci") ||
+            hayDescContiene("Confirmar compra") || hayTextoContiene("Confirmar compra") ||
+            hayDesc("Confirmar") || hayTexto("Confirmar")
 
     private fun esComprobante(): Boolean =
-        hayDescContiene("Comprobante") || hayTextoContiene("Comprobante")
+        hayDescContiene("Comprobante") || hayTextoContiene("Comprobante") ||
+            hayTextoContiene("exitosa") || hayDescContiene("exitosa") ||
+            hayTextoContiene("exitoso") || hayDescContiene("exitoso") ||
+            hayTextoContiene("realizada con éxito") || hayDescContiene("realizada con éxito")
 
     private fun esNoDisponible(): Boolean =
         hayDescContiene("operaciones cambiarias") ||
@@ -1211,7 +1220,9 @@ class HermesAccessibilityService : AccessibilityService() {
         verificarPantalla: (() -> Boolean)?,
         yaAvanzo: (() -> Boolean)? = null,
         desc: String? = null,
-        texto: String? = null
+        texto: String? = null,
+        descContiene: String? = null,
+        textoContiene: String? = null
     ): Boolean {
         var intento = 0
         var ultimoAvisoEspera = 0L
@@ -1246,7 +1257,7 @@ class HermesAccessibilityService : AccessibilityService() {
                 return false
             }
             // 2. Esperar botón habilitado (15s cubre la ventana de ~10s desactivado)
-            val btn = esperarBotonHabilitado(desc, texto, 15_000)
+            val btn = esperarBotonHabilitado(desc, texto, 15_000, descContiene, textoContiene)
             if (btn == null) {
                 Log.i(TAG, "$nombre ya no visible (avanzó) intento $intento")
                 return true
@@ -1277,7 +1288,7 @@ class HermesAccessibilityService : AccessibilityService() {
                     Log.i(TAG, "diálogo de error tras pulsar $nombre, reintentando")
                     break
                 }
-                when (estadoBoton(desc, texto)) {
+                when (estadoBoton(desc, texto, descContiene, textoContiene)) {
                     null -> {
                         Log.i(TAG, "$nombre desapareció (avanzó)")
                         avanzo = true
@@ -1310,7 +1321,9 @@ class HermesAccessibilityService : AccessibilityService() {
     private fun esperarBotonHabilitado(
         desc: String?,
         texto: String?,
-        timeoutMs: Long
+        timeoutMs: Long,
+        descContiene: String? = null,
+        textoContiene: String? = null
     ): AccessibilityNodeInfo? {
         val fin = SystemClock.uptimeMillis() + timeoutMs
         while (SystemClock.uptimeMillis() < fin && !detenido) {
@@ -1318,7 +1331,9 @@ class HermesAccessibilityService : AccessibilityService() {
             val nodo = buscarNodo {
                 ((desc != null && coincideDesc(it, desc)) ||
                     (texto != null && coincideTexto(it, texto)) ||
-                    (desc != null && coincideTexto(it, desc)))
+                    (desc != null && coincideTexto(it, desc)) ||
+                    (descContiene != null && coincideDescContiene(it, descContiene)) ||
+                    (textoContiene != null && coincideTextoContiene(it, textoContiene)))
             }
             if (nodo != null) {
                 val habilitado = try {
@@ -1714,21 +1729,24 @@ class HermesAccessibilityService : AccessibilityService() {
 
     private fun confirmarYComprobante(): Boolean {
         if (!esperarHasta(10_000) { esConfirmar() }) {
-            Log.w(TAG, "no se detectó 'Confirmar Operación'")
+            Log.w(TAG, "no se detectó la pantalla de Confirmar")
+            // Diagnóstico: volcar qué hay, para ajustar los textos la 1ª vez que
+            // haya cupo y se llegue a esta pantalla nunca antes vista.
+            volcarPantallaDiag("🔎 No reconocí la pantalla de Confirmar. Esto hay:")
             return false
         }
-        Log.i(TAG, "pantalla Confirmar Operación detectada")
-        notificar(TIPO_PANTALLA, "Paso 6/6: Confirmar Operación.")
+        Log.i(TAG, "pantalla de Confirmar detectada")
+        notificar(TIPO_PANTALLA, "Paso 6/6: Confirmar.")
 
-        // Pulsar Confirmar AUTOMÁTICAMENTE (Jhon: ningún paso es manual).
-        // yaAvanzo=esComprobante: si al cerrar el diálogo la operación ya se
-        // completó, NO se reintenta (evita duplicar la compra).
+        // Pulsar CUALQUIER botón que contenga "Confirmar" (sea "Confirmar" o
+        // "Confirmar Operación"). yaAvanzo=esComprobante: si ya se completó, NO
+        // se reintenta (evita duplicar la compra).
         val okConfirmar = pulsarConReintento(
-            nombre = "Confirmar Operación",
+            nombre = "Confirmar",
             verificarPantalla = { esConfirmar() },
             yaAvanzo = { esComprobante() },
-            desc = "Confirmar Operación",
-            texto = "Confirmar Operación"
+            descContiene = "Confirmar",
+            textoContiene = "Confirmar"
         )
         if (!okConfirmar) {
             Log.w(TAG, "no se pudo pulsar Confirmar")
