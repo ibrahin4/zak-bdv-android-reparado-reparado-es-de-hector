@@ -1745,7 +1745,23 @@ class HermesAccessibilityService : AccessibilityService() {
 
     private fun confirmarYComprobante(): Boolean {
         ultimoFalloConfirmError = false
-        if (!esperarHasta(10_000) { esConfirmar() }) {
+        // Tras la huella del paso anterior pasan 2 cosas: (a) aparece la pantalla de
+        // Confirmar (hay cupo) → seguimos; (b) el banco vuelve atrás y muestra "error
+        // inesperado" / mercado no disponible (sin cupo) → fallar YA (bandera) para
+        // que ejecutarFlujo re-loguee al instante, sin esperar los 10 s completos.
+        val finDeteccion = SystemClock.uptimeMillis() + 10_000L
+        var hayConfirmar = false
+        while (SystemClock.uptimeMillis() < finDeteccion && !detenido) {
+            if (esConfirmar()) { hayConfirmar = true; break }
+            if (hayErrorInesperado() || esNoDisponible()) {
+                ultimoFalloConfirmError = true
+                Log.w(TAG, "error/no-disponible antes de Confirmar → reintentar con re-login")
+                return false
+            }
+            esperar(150)
+        }
+        if (!hayConfirmar) {
+            if (detenido) return false
             Log.w(TAG, "no se detectó la pantalla de Confirmar")
             // Diagnóstico: volcar qué hay, para ajustar los textos la 1ª vez que
             // haya cupo y se llegue a esta pantalla nunca antes vista.
