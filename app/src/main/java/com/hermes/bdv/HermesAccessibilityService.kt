@@ -165,6 +165,11 @@ class HermesAccessibilityService : AccessibilityService() {
     // (rápido, sin salir de la app) en vez de relanzar.
     @Volatile private var sesionAbierta: Boolean = false
 
+    // true si confirmarYComprobante() falló por "error inesperado" del banco o
+    // mercado no disponible (sin cupo). En ese caso NO se compró nada, así que el
+    // flujo debe re-loguear y repetir aunque el error sea un cartel gris sin botón.
+    @Volatile private var ultimoFalloConfirmError: Boolean = false
+
     // ------------------------------------------------------------------
     // Ciclo de vida del servicio
     // ------------------------------------------------------------------
@@ -968,6 +973,17 @@ class HermesAccessibilityService : AccessibilityService() {
             hayTextoContiene("disponibles m") ||
             hayTextoContiene("No se encuentra disponible el mercado")
 
+    /**
+     * Detecta el cartel "(ha) ocurrido un error inesperado" del banco, SIN importar
+     * mayúsculas/minúsculas y sin necesidad de que sea un diálogo con botón: también
+     * cubre el texto gris que aparece abajo tras poner la huella cuando no hay cupo.
+     */
+    private fun hayErrorInesperado(): Boolean =
+        buscarNodo {
+            textoDe(it).contains("error inesperado", ignoreCase = true) ||
+                descDe(it).contains("error inesperado", ignoreCase = true)
+        }?.also { reciclarSeguro(it) } != null
+
     // ------------------------------------------------------------------
     // Acciones sobre la app BDV
     // ------------------------------------------------------------------
@@ -1142,7 +1158,7 @@ class HermesAccessibilityService : AccessibilityService() {
     private fun cerrarDialogoError(): Boolean {
         // Cubre "Ha ocurrido un error inesperado" y "Ocurrió un error inesperado
         // por parte de la app" (texto o descripción).
-        if (!hayTextoContiene("error inesperado") && !hayDescContiene("error inesperado")) return false
+        if (!hayErrorInesperado()) return false
         val ok = pulsar(desc = "Aceptar", texto = "Aceptar", timeoutMs = 2_000) ||
             pulsar(desc = "Entendido", texto = "Entendido", timeoutMs = 1_000)
         if (ok) Log.i(TAG, "diálogo 'error inesperado' cerrado")
@@ -1728,6 +1744,7 @@ class HermesAccessibilityService : AccessibilityService() {
     }
 
     private fun confirmarYComprobante(): Boolean {
+        ultimoFalloConfirmError = false
         if (!esperarHasta(10_000) { esConfirmar() }) {
             Log.w(TAG, "no se detectó la pantalla de Confirmar")
             // Diagnóstico: volcar qué hay, para ajustar los textos la 1ª vez que
@@ -1774,9 +1791,10 @@ class HermesAccessibilityService : AccessibilityService() {
             }
             // Error del banco o sin cupo tras la huella → fallar RÁPIDO para que
             // ejecutarFlujo cierre el diálogo, re-loguee y repita todo el proceso.
-            if (hayTextoContiene("error inesperado") || hayDescContiene("error inesperado") ||
-                esNoDisponible()
-            ) {
+            // Marca la bandera: el texto puede ser un cartel gris SIN botón, así que
+            // la decisión de reloguear no debe depender de cerrar un diálogo.
+            if (hayErrorInesperado() || esNoDisponible()) {
+                ultimoFalloConfirmError = true
                 Log.w(TAG, "error/no-disponible tras confirmar → reintentar con re-login")
                 return false
             }
@@ -1900,8 +1918,12 @@ class HermesAccessibilityService : AccessibilityService() {
                 }
                 if (detenido) break
                 // ¿Fue por "error inesperado" del banco o sin cupo? → seguro que
-                // NO se compró: cerrar el error, re-loguear y REPETIR el proceso.
-                if (cerrarDialogoError() || esNoDisponible()) {
+                // NO se compró: re-loguear y REPETIR el proceso. La decisión NO
+                // depende de cerrar un diálogo (el error puede ser un cartel gris
+                // SIN botón "Aceptar"): basta con haber visto el error, por la
+                // bandera que marca confirmarYComprobante o una re-detección directa.
+                cerrarDialogoError() // intenta cerrar el diálogo si lo hubiera
+                if (ultimoFalloConfirmError || hayErrorInesperado() || esNoDisponible()) {
                     notificar(TIPO_PANTALLA, "🔄 Error del banco / sin cupo tras confirmar; re-logueando y reintentando (ciclo $ciclo)…")
                     esperar(300)
                     continue
