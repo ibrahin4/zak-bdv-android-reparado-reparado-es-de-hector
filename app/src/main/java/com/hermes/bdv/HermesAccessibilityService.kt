@@ -966,7 +966,8 @@ class HermesAccessibilityService : AccessibilityService() {
         hayDescContiene("Comprobante") || hayTextoContiene("Comprobante") ||
             hayTextoContiene("exitosa") || hayDescContiene("exitosa") ||
             hayTextoContiene("exitoso") || hayDescContiene("exitoso") ||
-            hayTextoContiene("realizada con éxito") || hayDescContiene("realizada con éxito")
+            hayTextoContiene("realizada con éxito") || hayDescContiene("realizada con éxito") ||
+            hayTextoContiene("aprobad") || hayDescContiene("aprobad")
 
     private fun esNoDisponible(): Boolean =
         hayDescContiene("operaciones cambiarias") ||
@@ -1745,17 +1746,27 @@ class HermesAccessibilityService : AccessibilityService() {
 
     private fun confirmarYComprobante(): Boolean {
         ultimoFalloConfirmError = false
-        // Tras la huella del paso anterior pasan 2 cosas: (a) aparece la pantalla de
-        // Confirmar (hay cupo) → seguimos; (b) el banco vuelve atrás y muestra "error
-        // inesperado" / mercado no disponible (sin cupo) → fallar YA (bandera) para
-        // que ejecutarFlujo re-loguee al instante, sin esperar los 10 s completos.
-        val finDeteccion = SystemClock.uptimeMillis() + 10_000L
+        // Este es EL momento de la huella: al pulsar "Continuar" en el paso anterior
+        // aparece la huella del sistema y el usuario pone el dedo. Después pasa UNA
+        // de dos cosas:
+        //   (a) hay cupo → avanza a la pantalla "Confirmar transacción" → seguimos y
+        //       pulsamos cualquier botón "Confirmar".
+        //   (b) NO hay cupo → la huella "no pasa" y el banco se DEVUELVE a la primera
+        //       pantalla (Divisas/Comprar) mostrando "ha ocurrido un error inesperado"
+        //       → fallar YA (bandera) para que ejecutarFlujo re-loguee AL INSTANTE y
+        //       repita TODO el proceso.
+        // Como aquí espera a que el usuario ponga la huella, la ventana es amplia (no
+        // 10 s): se corta al instante en cuanto aparece Confirmar o el error.
+        notificar(TIPO_PANTALLA, "👆 Pon la huella. Esperando confirmación o reintento…")
+        val finDeteccion = SystemClock.uptimeMillis() + ESPERA_AUTORIZACION_MS
         var hayConfirmar = false
-        while (SystemClock.uptimeMillis() < finDeteccion && !detenido) {
+        while (SystemClock.uptimeMillis() < finDeteccion && !detenido &&
+            !Thread.currentThread().isInterrupted
+        ) {
             if (esConfirmar()) { hayConfirmar = true; break }
             if (hayErrorInesperado() || esNoDisponible()) {
                 ultimoFalloConfirmError = true
-                Log.w(TAG, "error/no-disponible antes de Confirmar → reintentar con re-login")
+                Log.w(TAG, "error/no-disponible tras la huella → re-login al instante")
                 return false
             }
             esperar(150)
